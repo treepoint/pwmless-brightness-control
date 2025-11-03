@@ -27,6 +27,7 @@ import {
   ServerAPI,
   staticClasses,
 } from "decky-frontend-lib";
+
 import { useState } from "react";
 import { FaEyeDropper } from "react-icons/fa";
 import Overlay from "./overlay";
@@ -35,49 +36,84 @@ const getOpacityValue = () => {
   return parseFloat(localStorage.getItem("pwmlessbrightness") ?? "0.5")
 }
 
+const getLutBrightnessValue = () => {
+  return parseFloat(localStorage.getItem("pwmlessbrightness_lut") ?? "1.0")
+}
+
 const getPwmBrightnessPercent = () => {
   return 100 - (getOpacityValue() * 100)
 }
 
-const BrightnessSettings = ({ onBrightnessChange }) => {
-  const [opacity, setOpacity] = useState(getPwmBrightnessPercent());
+const getLutBrightnessPercent = () => {
+  return getLutBrightnessValue() * 100
+}
 
-  const updateBrightness = async (newOpacity: number) => {
-    setOpacity(newOpacity);
-    onBrightnessChange(newOpacity)
+const BrightnessSettings = ({ 
+  onOverlayBrightnessChange,
+  onLutBrightnessChange
+}) => {
+  const [overlayBrightness, setOverlayBrightness] = useState(getPwmBrightnessPercent());
+  const [lutBrightness, setLutBrightness] = useState(getLutBrightnessPercent());
+
+  const updateOverlayBrightness = async (newBrightness: number) => {
+    setOverlayBrightness(newBrightness);
+    onOverlayBrightnessChange(newBrightness)
+  };
+
+  const updateLutBrightness = async (newBrightness: number) => {
+    setLutBrightness(newBrightness);
+    onLutBrightnessChange(newBrightness)
   };
 
   return (
-    <PanelSection title="Brightness Overlay">
-      <PanelSectionRow>
-        <SliderField
-          label="Screen Brightness"
-          value={opacity}
-          min={0}
-          max={100}
-          step={1}
-          showValue={true}
-          onChange={updateBrightness}
-        />
-      </PanelSectionRow>
-    </PanelSection>
+    <>
+      <PanelSection title="Brightness Overlay">
+        <PanelSectionRow>
+          <SliderField
+            label="Overlay Brightness"
+            value={overlayBrightness}
+            min={0}
+            max={100}
+            step={1}
+            showValue={true}
+            onChange={updateOverlayBrightness}
+          />
+        </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="LUT Brightness">
+        <PanelSectionRow>
+          <SliderField
+            label="Screen Brightness"
+            value={lutBrightness}
+            min={0}
+            max={100}
+            step={1}
+            showValue={true}
+            onChange={updateLutBrightness}
+          />
+        </PanelSectionRow>
+      </PanelSection>
+    </>
   );
 };
 
 let pwmOpacity = getOpacityValue()
-let brightnessUpdateTimeout: NodeJS.Timeout | null = null; 
+let lutBrightness = getLutBrightnessValue()
+let overlayUpdateTimeout: NodeJS.Timeout | null = null;
+let lutUpdateTimeout: NodeJS.Timeout | null = null;
 
 export default definePlugin((serverAPI: ServerAPI) => {
-  // Function to update brightness & trigger re-render of overlay
-  const updateBrightness = (percent: number) => {
+  // Update overlay brightness
+  const updateOverlayBrightness = (percent: number) => {
     pwmOpacity = (100 - percent) / 100
     localStorage.setItem("pwmlessbrightness", pwmOpacity.toString())
-    if (brightnessUpdateTimeout) {
-      clearTimeout(brightnessUpdateTimeout);
+    
+    if (overlayUpdateTimeout) {
+      clearTimeout(overlayUpdateTimeout);
     }
   
-    // Set a new timeout for 2 seconds
-    brightnessUpdateTimeout = setTimeout(() => {
+    overlayUpdateTimeout = setTimeout(() => {
       serverAPI.routerHook.removeGlobalComponent("BlackOverlay");
   
       setTimeout(() => {
@@ -85,14 +121,47 @@ export default definePlugin((serverAPI: ServerAPI) => {
           "BlackOverlay",
           (props) => <Overlay {...props} opacity={pwmOpacity} />
         );
-      }, 10); // Small delay to ensure proper re-render
-    }, 2000); // Wait 2 seconds after the last update
+      }, 10);
+    }, 200);
   };
+
+  // Update LUT brightness (Dimmer Deck style)
+  const updateLutBrightness = async (percent: number) => {
+    lutBrightness = percent / 100
+    localStorage.setItem("pwmlessbrightness_lut", lutBrightness.toString())
+    
+    if (lutUpdateTimeout) {
+      clearTimeout(lutUpdateTimeout);
+    }
+
+    lutUpdateTimeout = setTimeout(async () => {
+      try {
+        await serverAPI.callPluginMethod("set_brightness", {
+          brightness: lutBrightness,
+        });
+      } catch (error) {
+        console.error("Failed to set LUT brightness:", error);
+      }
+    }, 100);
+  };
+
+  // Initialize plugin
+  (async () => {
+    try {
+      await serverAPI.callPluginMethod("activate", {});
+    } catch (error) {
+      console.error("Failed to activate plugin:", error);
+    }
+  })();
 
   serverAPI.routerHook.addGlobalComponent("BlackOverlay", (props) => <Overlay {...props} opacity={pwmOpacity} />);
 
   return {
-  title: <div className={staticClasses.Title}>PWMless Brightness</div>,
-  content: <BrightnessSettings onBrightnessChange={updateBrightness} />,
-  icon: <FaEyeDropper />,
-}});
+    title: <div className={staticClasses.Title}>PWMless Brightness</div>,
+    content: <BrightnessSettings 
+      onOverlayBrightnessChange={updateOverlayBrightness}
+      onLutBrightnessChange={updateLutBrightness}
+    />,
+    icon: <FaEyeDropper />,
+  };
+});

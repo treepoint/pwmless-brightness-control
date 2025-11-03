@@ -62,7 +62,7 @@ const Overlay = ({ opacity = 0.5, backgroundColor = 'black' }) => {
       width: "100vw",
       height: "100vh",
       background: backgroundColor,
-      zIndex: 7001, // volume bar is 7000
+      zIndex: 9999, // volume bar is 7000
       position: "fixed",
       opacity,
       pointerEvents: "none"
