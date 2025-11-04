@@ -67,7 +67,7 @@ const BrightnessSettings = ({
 
   return (
     <>
-      <PanelSection title="General brightness">
+      <PanelSection title="General brightness (LUT)">
         <PanelSectionRow>
           <SliderField
             label="General brightness"
@@ -81,10 +81,10 @@ const BrightnessSettings = ({
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title="HDR Additional Brightness">
+      <PanelSection title="HDR Brightness (Overlay)">
         <PanelSectionRow>
           <SliderField
-            label="HDR Additional Brightness"
+            label="HDR Brightness"
             value={overlayBrightness}
             min={0}
             max={100}

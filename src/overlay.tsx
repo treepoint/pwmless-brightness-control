@@ -19,7 +19,7 @@
  */
 
 import { findModuleChild } from "decky-frontend-lib";
-import { useEffect, useState, VFC } from "react";
+import { VFC } from "react";
 
 enum UIComposition {
   Hidden = 0,
@@ -62,7 +62,7 @@ const Overlay = ({ opacity = 0.5, backgroundColor = 'black' }) => {
       width: "100vw",
       height: "100vh",
       background: backgroundColor,
-      zIndex: 9999, // volume bar is 7000
+      zIndex: -1, // volume bar is 7000
       position: "fixed",
       opacity,
       pointerEvents: "none"
