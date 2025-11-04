@@ -43,19 +43,16 @@ let currentOverlayBrightnessPercent = getPwmBrightnessPercent(); // сохран
 let isHDREnabledGlobal = false;
 let serverAPIRef: ServerAPI | null = null;
 
-// Функция для обновления оверлея (глобальная)
 const applyOverlayOpacity = () => {
-  const opacity = isHDREnabledGlobal
-    ? (100 - currentOverlayBrightnessPercent) / 100
-    : 0; // 0 — прозрачный, когда HDR выключен
+  // Всегда передаём ПРОЦЕНТ, даже если HDR выключен
+  const percent = isHDREnabledGlobal ? currentOverlayBrightnessPercent : 100;
 
-  // Обновляем глобальный компонент
   if (serverAPIRef) {
     serverAPIRef.routerHook.removeGlobalComponent("BlackOverlay");
     setTimeout(() => {
       serverAPIRef?.routerHook.addGlobalComponent(
         "BlackOverlay",
-        (props) => <Overlay {...props} opacity={opacity} />
+        (props) => <Overlay {...props} opacityPercent={percent} />
       );
     }, 10);
   }
@@ -122,7 +119,7 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange }) => {
           <SliderField
             label="General brightness"
             value={lut}
-            min={0}
+            min={1}
             max={100}
             step={1}
             showValue
@@ -136,7 +133,7 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange }) => {
           <SliderField
             label="HDR Brightness"
             value={savedOverlay}
-            min={0}
+            min={1}
             max={100}
             step={1}
             showValue

@@ -53,23 +53,42 @@ const UICompositionProxy: VFC = () => {
   return null;
 };
 
-const Overlay = ({ opacity = 0.5, backgroundColor = 'black' }) => {
-  return (<div
-    id="brightness_bar_container"
-    style={{
-      left: 0,
-      top: 0,
-      width: "100vw",
-      height: "100vh",
-      background: backgroundColor,
-      zIndex: -1, // volume bar is 7000
-      position: "fixed",
-      opacity,
-      pointerEvents: "none"
-    }}
-  >
-    <UICompositionProxy />
-  </div>)
+// Преобразует линейный процент (0–100) в перцептуально-гладкий opacity
+const getSmoothOpacity = (percent: number): number => {
+  if (percent >= 100) return 0;
+  if (percent <= 0) return 0.997;
+
+  const t = (100 - percent) / 100; // 0 → 1
+  // Экспериментально подобранная степень: 2.2–3 даёт хорошую плавность
+  return Math.pow(t, 0.3);
+};
+
+interface OverlayProps {
+  opacityPercent?: number; // 0–100, как в настройках
+  backgroundColor?: string;
+}
+
+const Overlay: VFC<OverlayProps> = ({ opacityPercent = 50, backgroundColor = 'black' }) => {
+  const smoothOpacity = getSmoothOpacity(opacityPercent);
+
+  return (
+    <div
+      id="brightness_bar_container"
+      style={{
+        left: 0,
+        top: 0,
+        width: "100vw",
+        height: "100vh",
+        background: backgroundColor,
+        zIndex: -1,
+        position: "fixed",
+        opacity: smoothOpacity,
+        pointerEvents: "none",
+      }}
+    >
+      <UICompositionProxy />
+    </div>
+  );
 };
 
 export default Overlay;
