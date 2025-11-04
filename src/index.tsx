@@ -15,7 +15,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  *
- * This project is derived from vibrantDeck (https://github.com/libvibrant/vibrantDeck)
+ * This project is derived from vibrantDeck (https://github.com/steam3d/MagicBlackDecky)
  * which is copyright (c) libvibrant and licensed under GNU General Public License v3.0.
  */
 
@@ -32,68 +32,87 @@ import { useState, useEffect } from "react";
 import { FaEyeDropper } from "react-icons/fa";
 import Overlay from "./overlay";
 
-const getOpacityValue = () => {
-  return parseFloat(localStorage.getItem("pwmlessbrightness") ?? "0.5");
+// Хелперы
+const getOpacityValue = () => parseFloat(localStorage.getItem("pwmlessbrightness") ?? "0.5");
+const getLutBrightnessValue = () => parseFloat(localStorage.getItem("pwmlessbrightness_lut") ?? "1.0");
+const getPwmBrightnessPercent = () => 100 - getOpacityValue() * 100;
+const getLutBrightnessPercent = () => getLutBrightnessValue() * 100;
+
+// Глобальное состояние (доступно вне React)
+let currentOverlayBrightnessPercent = getPwmBrightnessPercent(); // сохранённое значение
+let isHDREnabledGlobal = false;
+let serverAPIRef: ServerAPI | null = null;
+
+// Функция для обновления оверлея (глобальная)
+const applyOverlayOpacity = () => {
+  const opacity = isHDREnabledGlobal
+    ? (100 - currentOverlayBrightnessPercent) / 100
+    : 0; // 0 — прозрачный, когда HDR выключен
+
+  // Обновляем глобальный компонент
+  if (serverAPIRef) {
+    serverAPIRef.routerHook.removeGlobalComponent("BlackOverlay");
+    setTimeout(() => {
+      serverAPIRef?.routerHook.addGlobalComponent(
+        "BlackOverlay",
+        (props) => <Overlay {...props} opacity={opacity} />
+      );
+    }, 10);
+  }
 };
 
-const getLutBrightnessValue = () => {
-  return parseFloat(localStorage.getItem("pwmlessbrightness_lut") ?? "1.0");
-};
+// Фоновая проверка HDR (работает всегда, даже без открытого UI)
+let hdrCheckInterval: NodeJS.Timeout | null = null;
 
-const getPwmBrightnessPercent = () => {
-  return 100 - getOpacityValue() * 100;
-};
+const startHDRMonitoring = (serverAPI: ServerAPI) => {
+  serverAPIRef = serverAPI;
 
-const getLutBrightnessPercent = () => {
-  return getLutBrightnessValue() * 100;
-};
+  const checkHDR = async () => {
+    try {
+      const hdrStatus = await serverAPI.callPluginMethod("get_hdr_status", {});
+      const newHDRStatus = hdrStatus.result;
 
-const BrightnessSettings = ({ 
-  onOverlayBrightnessChange,
-  onLutBrightnessChange,
-  serverAPI,
-}) => {
-  const [savedOverlayBrightness, setSavedOverlayBrightness] = useState(getPwmBrightnessPercent());
-  const [lutBrightness, setLutBrightness] = useState(getLutBrightnessPercent());
-  const [isHDREnabled, setIsHDREnabled] = useState(false);
-
-  // Проверяем HDR каждые 250 мс
-  useEffect(() => {
-    const checkHDR = async () => {
-      try {
-        const hdrStatus = await serverAPI.callPluginMethod("get_hdr_status", {});
-        setIsHDREnabled(hdrStatus.result);
-      } catch (error) {
-        console.error("Failed to check HDR status:", error);
+      if (newHDRStatus !== isHDREnabledGlobal) {
+        isHDREnabledGlobal = newHDRStatus;
+        applyOverlayOpacity(); // обновляем оверлей при изменении HDR
       }
-    };
-
-    checkHDR();
-    const interval = setInterval(checkHDR, 250);
-    return () => clearInterval(interval);
-  }, [serverAPI]);
-
-  // Применяем яркость: сохранённую — если HDR включён, иначе 100 (прозрачный оверлей)
-  useEffect(() => {
-    if (isHDREnabled) {
-      onOverlayBrightnessChange(savedOverlayBrightness);
-    } else {
-      onOverlayBrightnessChange(100); // оверлей выключен
-    }
-  }, [isHDREnabled, savedOverlayBrightness, onOverlayBrightnessChange]);
-
-  const handleOverlayChange = (value: number) => {
-    setSavedOverlayBrightness(value);
-    // Сохраняем в localStorage сразу (опционально, но логично)
-    localStorage.setItem("pwmlessbrightness", ((100 - value) / 100).toString());
-    if (isHDREnabled) {
-      onOverlayBrightnessChange(value);
+    } catch (error) {
+      console.error("HDR check failed:", error);
     }
   };
 
+  checkHDR(); // сразу проверить
+  hdrCheckInterval = setInterval(checkHDR, 250);
+};
+
+const stopHDRMonitoring = () => {
+  if (hdrCheckInterval) {
+    clearInterval(hdrCheckInterval);
+    hdrCheckInterval = null;
+  }
+  serverAPIRef = null;
+};
+
+// === Компонент настроек (только для UI) ===
+const BrightnessSettings = ({ onOverlayChange, onLutChange }) => {
+  const [savedOverlay, setSavedOverlay] = useState(currentOverlayBrightnessPercent);
+  const [lut, setLut] = useState(getLutBrightnessPercent());
+
+  // UI только отображает и редактирует savedOverlay
+  const handleOverlayChange = (value: number) => {
+    setSavedOverlay(value);
+    currentOverlayBrightnessPercent = value;
+    localStorage.setItem("pwmlessbrightness", ((100 - value) / 100).toString());
+    // Если сейчас HDR включён — сразу применить
+    if (isHDREnabledGlobal) {
+      applyOverlayOpacity();
+    }
+    onOverlayChange?.(value);
+  };
+
   const handleLutChange = (value: number) => {
-    setLutBrightness(value);
-    onLutBrightnessChange(value);
+    setLut(value);
+    onLutChange(value);
   };
 
   return (
@@ -102,27 +121,27 @@ const BrightnessSettings = ({
         <PanelSectionRow>
           <SliderField
             label="General brightness"
-            value={lutBrightness}
+            value={lut}
             min={0}
             max={100}
             step={1}
-            showValue={true}
+            showValue
             onChange={handleLutChange}
           />
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title={`HDR Brightness (Overlay) ${isHDREnabled ? "✓" : "✗"}`}>
+      <PanelSection title="HDR Brightness (Overlay)">
         <PanelSectionRow>
           <SliderField
             label="HDR Brightness"
-            value={savedOverlayBrightness}
+            value={savedOverlay}
             min={0}
             max={100}
             step={1}
-            showValue={true}
+            showValue
             onChange={handleOverlayChange}
-            disabled={!isHDREnabled}
+            disabled={!isHDREnabledGlobal}
           />
         </PanelSectionRow>
       </PanelSection>
@@ -130,74 +149,51 @@ const BrightnessSettings = ({
   );
 };
 
-// Глобальные переменные для debounce
-let pwmOpacity = getOpacityValue();
-let lutBrightness = getLutBrightnessValue();
-let overlayUpdateTimeout: NodeJS.Timeout | null = null;
-let lutUpdateTimeout: NodeJS.Timeout | null = null;
-
+// === Плагин ===
 export default definePlugin((serverAPI: ServerAPI) => {
-  const updateOverlayBrightness = (percent: number) => {
-    // Всегда обновляем глобальную переменную (даже если 100)
-    pwmOpacity = (100 - percent) / 100;
-
-    if (overlayUpdateTimeout) {
-      clearTimeout(overlayUpdateTimeout);
-    }
-
-    overlayUpdateTimeout = setTimeout(() => {
-      serverAPI.routerHook.removeGlobalComponent("BlackOverlay");
-      setTimeout(() => {
-        serverAPI.routerHook.addGlobalComponent(
-          "BlackOverlay",
-          (props) => <Overlay {...props} opacity={pwmOpacity} />
-        );
-      }, 10);
-    }, 200);
-  };
-
+  // --- LUT Brightness (оставим как debounce) ---
+  let lutUpdateTimeout: NodeJS.Timeout | null = null;
   const updateLutBrightness = async (percent: number) => {
-    lutBrightness = percent / 100;
-    localStorage.setItem("pwmlessbrightness_lut", lutBrightness.toString());
-
-    if (lutUpdateTimeout) {
-      clearTimeout(lutUpdateTimeout);
-    }
-
+    const brightness = percent / 100;
+    localStorage.setItem("pwmlessbrightness_lut", brightness.toString());
+    if (lutUpdateTimeout) clearTimeout(lutUpdateTimeout);
     lutUpdateTimeout = setTimeout(async () => {
       try {
-        await serverAPI.callPluginMethod("set_brightness", {
-          brightness: lutBrightness,
-        });
+        await serverAPI.callPluginMethod("set_brightness", { brightness });
       } catch (error) {
-        console.error("Failed to set LUT brightness:", error);
+        console.error("LUT brightness failed:", error);
       }
     }, 300);
   };
 
-  // Активация плагина
+  // Активация
   (async () => {
     try {
       await serverAPI.callPluginMethod("activate", {});
     } catch (error) {
-      console.error("Failed to activate plugin:", error);
+      console.error("Plugin activate failed:", error);
     }
   })();
 
-  // Изначально добавляем оверлей (на случай, если HDR уже включён)
-  serverAPI.routerHook.addGlobalComponent("BlackOverlay", (props) => (
-    <Overlay {...props} opacity={pwmOpacity} />
-  ));
+  // Запуск HDR мониторинга — работает всегда!
+  startHDRMonitoring(serverAPI);
+
+  // Изначально добавим оверлей (возможно, HDR уже включён)
+  applyOverlayOpacity();
 
   return {
     title: <div className={staticClasses.Title}>PWMless Brightness</div>,
     content: (
       <BrightnessSettings
-        onOverlayBrightnessChange={updateOverlayBrightness}
-        onLutBrightnessChange={updateLutBrightness}
-        serverAPI={serverAPI}
+        onOverlayChange={() => {}} // можно оставить пустым — всё управление глобальное
+        onLutChange={updateLutBrightness}
       />
     ),
     icon: <FaEyeDropper />,
+    // Очистка при выгрузке плагина
+    onDismount() {
+      stopHDRMonitoring();
+      serverAPI.routerHook.removeGlobalComponent("BlackOverlay");
+    },
   };
 });
