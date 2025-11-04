@@ -148,3 +148,42 @@ class Plugin:
         decky_plugin.logger.info("Overlay plugin stopped")
         if not self.first_run:
             await self.reset()
+
+    async def get_hdr_status(self) -> str:
+        def return_result(result):
+            decky_plugin.logger.info(f"HDR returned: {result}")
+
+            return result
+
+        """Проверяет включена ли HDR"""
+        if not self.displays:
+            return return_result(0)
+        
+        display = self.displays[0]
+        cmd = [
+            "xprop",
+            "-root",
+            "-d", display,
+            "GAMESCOPE_COLOR_APP_WANTS_HDR_FEEDBACK"
+        ]
+        
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            decky_plugin.logger.info(f"HDR status output: {result.stdout}")
+            
+            # Проверяй наличие свойства И его значение
+            if "not found" in result.stdout:
+                decky_plugin.logger.info("HDR property not found - HDR DISABLED")
+                return return_result(0)
+            
+            # Если свойство есть и равно 1 - HDR включена
+            is_hdr = "= 1" in result.stdout
+            decky_plugin.logger.info(f"HDR is {'ENABLED' if is_hdr else 'DISABLED'}")
+            if is_hdr:
+                return return_result(1)
+            else:
+                return return_result(0)
+        except Exception as e:
+            decky_plugin.logger.error(f"Failed to get HDR status: {e}")
+            return return_result(0)
+    
