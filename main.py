@@ -36,7 +36,7 @@ def quantize(x: float) -> int:
 
 def generate_lut1d(output: str, brightness: float):
     decky_plugin.logger.info(f"Generating LUT1D: output={output}, brightness={brightness}")
-    
+
     if brightness < 0 or brightness > 1:
         decky_plugin.logger.error("Invalid brightness")
         raise ValueError("Brightness must be between 0 and 1")
@@ -120,9 +120,6 @@ lut1d_path = os.path.abspath(
 )
 
 class Plugin:
-    async def _main(self):
-        decky_plugin.logger.info("Overlay plugin started")
-
     async def activate(self):
         decky_plugin.logger.info("Activating")
         self.displays = get_steam_displays()
@@ -130,24 +127,14 @@ class Plugin:
         generate_lut3d(lut3d_path, 1.0)
         decky_plugin.logger.info(f"Found steam displays: {self.displays}")
 
-    def prepare(self):
-        decky_plugin.logger.info("Preparing")
-        self.first_run = False
-        for display in self.displays:
-            set_xprop(display, "GAMESCOPE_COMPOSITE_FORCE", "8c", 1)
-        set_xprop(display, "GAMESCOPE_COLOR_3DLUT_OVERRIDE", "8u", lut3d_path)
-
     async def set_brightness(self, brightness: float):
         decky_plugin.logger.info(f"Change brightness to {brightness}")
 
-        if self.first_run:
-            self.prepare()
-
         generate_lut1d(lut1d_path, brightness)
         for display in self.displays:
-            set_xprop(
-                display, "GAMESCOPE_COLOR_SHAPERLUT_OVERRIDE", "8u", lut1d_path
-            )
+            set_xprop(display, "GAMESCOPE_COMPOSITE_FORCE", "8c", 1)
+            set_xprop(display, "GAMESCOPE_COLOR_3DLUT_OVERRIDE", "8u", lut3d_path)
+            set_xprop(display, "GAMESCOPE_COLOR_SHAPERLUT_OVERRIDE", "8u", lut1d_path)
 
     async def reset(self):
         decky_plugin.logger.info("Resetting")

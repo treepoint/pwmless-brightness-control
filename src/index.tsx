@@ -67,30 +67,30 @@ const BrightnessSettings = ({
 
   return (
     <>
-      <PanelSection title="Brightness Overlay">
+      <PanelSection title="General brightness">
         <PanelSectionRow>
           <SliderField
-            label="Overlay Brightness"
-            value={overlayBrightness}
-            min={0}
-            max={100}
-            step={1}
-            showValue={true}
-            onChange={updateOverlayBrightness}
-          />
-        </PanelSectionRow>
-      </PanelSection>
-
-      <PanelSection title="LUT Brightness">
-        <PanelSectionRow>
-          <SliderField
-            label="Screen Brightness"
+            label="General brightness"
             value={lutBrightness}
             min={0}
             max={100}
             step={1}
             showValue={true}
             onChange={updateLutBrightness}
+          />
+        </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="HDR Additional Brightness">
+        <PanelSectionRow>
+          <SliderField
+            label="HDR Additional Brightness"
+            value={overlayBrightness}
+            min={0}
+            max={100}
+            step={1}
+            showValue={true}
+            onChange={updateOverlayBrightness}
           />
         </PanelSectionRow>
       </PanelSection>
@@ -142,7 +142,7 @@ export default definePlugin((serverAPI: ServerAPI) => {
       } catch (error) {
         console.error("Failed to set LUT brightness:", error);
       }
-    }, 100);
+    }, 300);
   };
 
   // Initialize plugin
