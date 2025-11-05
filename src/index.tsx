@@ -37,19 +37,22 @@ const getOpacityValue = () => parseFloat(localStorage.getItem("pwmlessbrightness
 const getLutBrightnessValue = () => parseFloat(localStorage.getItem("pwmlessbrightness_lut") ?? "1.0");
 const getLutBrightnessPercent = () => getLutBrightnessValue() * 100;
 const getPwmBrightnessPercent = () => 100 - getOpacityValue() * 100;
-const getVibrancyValue = () => parseFloat(localStorage.getItem("vibrancy_value") ?? "10");
+const getVibrancyValue = () => parseFloat(localStorage.getItem("vibrancy_value") ?? "0.5");
+const getTemperatureValue = () => parseFloat(localStorage.getItem("temperature_value") ?? "9500");
 
 // Глобальное состояние (доступно вне React)
 let currentOverlayBrightnessPercent = getPwmBrightnessPercent();
+let currentTemperatureGlobal = getTemperatureValue();
 let isHDREnabledGlobal = false;
-let overlayUpdateCallback: ((percent: number) => void) | null = null;
+let overlayUpdateCallback: ((percent: number, temperature: number) => void) | null = null;
 
 // КРИТИЧНО: вместо remove/add просто обновляем процент через callback
 const applyOverlayOpacity = () => {
   const percent = isHDREnabledGlobal ? currentOverlayBrightnessPercent : 100;
-  
+  const percent_compensate = percent - getOpacityValue()
+
   if (overlayUpdateCallback) {
-    overlayUpdateCallback(percent);
+    overlayUpdateCallback(percent_compensate, currentTemperatureGlobal);
   }
 };
 
@@ -92,10 +95,13 @@ const OverlayWrapper = () => {
     isHDREnabledGlobal ? currentOverlayBrightnessPercent : 100
   );
 
+  const [temperature, setTemperature] = useState(currentTemperatureGlobal);
+
   useEffect(() => {
     // Регистрируем callback для обновления
-    overlayUpdateCallback = (percent: number) => {
+    overlayUpdateCallback = (percent: number, temperature: number) => {
       setOpacityPercent(percent);
+      setTemperature(temperature);
     };
 
     return () => {
@@ -103,21 +109,22 @@ const OverlayWrapper = () => {
     };
   }, []);
 
-  return <Overlay opacityPercent={opacityPercent} />;
+  return <Overlay opacityPercent={opacityPercent} temperatureKelvin={temperature}/>;
 };
 
 // === Компонент настроек (только для UI) ===
-const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange }) => {
+const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange, onTemperatureChange }) => {
   const [savedOverlayPercent, setSavedOverlayPercent] = useState(currentOverlayBrightnessPercent);
   const [lutValue, setLutValue] = useState(getLutBrightnessPercent());
   const [currentTargetVibrancy, setCurrentTargetVibrancy] = useState(getVibrancyValue());
+  const [currentTargetTemperature, setCurrentTargetTemperature] = useState(getTemperatureValue());
   const [isHDREnabled, setIsHDREnabled] = useState(isHDREnabledGlobal);
 
-  // UI только отображает и редактирует savedOverlay
   const handleOverlayChange = (value: number) => {
     setSavedOverlayPercent(value);
     currentOverlayBrightnessPercent = value;
     localStorage.setItem("pwmlessbrightness", ((100 - value) / 100).toString());
+
     // Если сейчас HDR включён — сразу применить
     if (isHDREnabledGlobal) {
       applyOverlayOpacity();
@@ -135,6 +142,19 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange }) 
     onVibrancyChange(value);
   };
 
+  const handleTemperatureChange = (value: number) => {
+    setCurrentTargetTemperature(value);
+    onTemperatureChange(value);
+    localStorage.setItem("temperature_value", value.toString());
+
+    currentTemperatureGlobal = value;
+
+    if (isHDREnabledGlobal) {
+      applyOverlayOpacity();
+    }
+    onTemperatureChange?.(value);
+  };
+
   useEffect(() => {
     setIsHDREnabled(isHDREnabledGlobal);
   }, [isHDREnabledGlobal]);
@@ -145,10 +165,11 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange }) 
         <PanelSectionRow>
           <SliderField
             label="General brightness (LUT)"
+            description="Works for SDR content and UI"
             value={lutValue}
-            min={1}
-            max={100}
             step={1}
+            min={10}
+            max={100}
             showValue
             onChange={handleLutChange}
           />
@@ -156,8 +177,9 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange }) 
         <PanelSectionRow>
           <SliderField
             label="HDR Brightness (Overlay)"
+            description="Works only for HDR content"
             value={savedOverlayPercent}
-            min={1}
+            min={5}
             max={100}
             step={1}
             showValue
@@ -170,12 +192,24 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange }) 
       <PanelSection title="Color correction">
         <PanelSectionRow>
           <SliderField
+            label="Temperature"
+            description="Low to warmer color and high for cooler."
+            value={currentTargetTemperature}
+            step={100}
+            min={3500}
+            max={9000}
+            showValue
+            onChange={handleTemperatureChange}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <SliderField
             label="Vibrancy"
-            description="Control the vibrancy of the display"
+            description="Control the vibrancy. Works for some games."
             value={currentTargetVibrancy}
-            step={1}
-            max={20}
+            step={0.1}
             min={0}
+            max={1}
             showValue
             onChange={handleVibrancyChange}
           />
@@ -189,6 +223,7 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange }) 
 export default definePlugin((serverAPI: ServerAPI) => {
   let lutUpdateTimeout: NodeJS.Timeout | null = null;
   let vibrancyUpdateTimeout: NodeJS.Timeout | null = null;
+  let temperatureUpdateTimeout: NodeJS.Timeout | null = null;
 
   const updateLutBrightness = async (percent: number) => {
     const brightness = percent / 100;
@@ -197,7 +232,11 @@ export default definePlugin((serverAPI: ServerAPI) => {
     if (lutUpdateTimeout) clearTimeout(lutUpdateTimeout);
     lutUpdateTimeout = setTimeout(async () => {
       try {
-        await serverAPI.callPluginMethod("set_brightness", { brightness });
+        await serverAPI.callPluginMethod("set_brightness_and_temperature", 
+          { 
+            brightness: brightness, 
+            temperature_kelvin: getTemperatureValue()
+          });
       } catch (error) {
         console.error("LUT brightness failed:", error);
       }
@@ -214,6 +253,26 @@ export default definePlugin((serverAPI: ServerAPI) => {
         await serverAPI.callPluginMethod("set_vibrancy", { vibrancy });
       } catch (error) {
         console.error("Vibrancy failed:", error);
+      }
+    }, 300);
+  };
+
+  const updateTemperature = async (value: number) => {
+    const temperature = value;
+    currentTemperatureGlobal = value; 
+
+    localStorage.setItem("temperature_value", temperature.toString());
+
+    if (temperatureUpdateTimeout) clearTimeout(temperatureUpdateTimeout);
+    temperatureUpdateTimeout = setTimeout(async () => {
+      try {
+        await serverAPI.callPluginMethod("set_brightness_and_temperature", 
+          { 
+            brightness: getLutBrightnessValue(), 
+            temperature_kelvin: temperature 
+          });
+      } catch (error) {
+        console.error("Temperature failed:", error);
       }
     }, 300);
   };
@@ -240,6 +299,7 @@ export default definePlugin((serverAPI: ServerAPI) => {
         onOverlayChange={() => {}}
         onLutChange={updateLutBrightness}
         onVibrancyChange={updateVibrancy}
+        onTemperatureChange={updateTemperature}
       />
     ),
     icon: <FaEyeDropper />,

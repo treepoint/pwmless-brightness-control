@@ -42,21 +42,29 @@ def get_steam_displays() -> List[str]:
 def quantize(x: float) -> int:
     return int(round(x * 65535))
 
-def generate_lut1d(output: str, brightness: float):
-    decky_plugin.logger.info(f"Generating LUT1D: output={output}, brightness={brightness}")
+def generate_lut1d(output: str, brightness: float, temperature_kelvin: float = 6500.0):
+    decky_plugin.logger.info(f"Generating LUT1D: brightness={brightness}, temp={temperature_kelvin}K")
 
-    if brightness < 0 or brightness > 1:
-        decky_plugin.logger.error("Invalid brightness")
+    if not (0 <= brightness <= 1):
         raise ValueError("Brightness must be between 0 and 1")
-    to_unit = lambda i: i / (LUT1D_SIZE - 1) * brightness
+    if not (1000 <= temperature_kelvin <= 15000):
+        raise ValueError("Temperature must be between 1000K and 15000K")
+
+    r_mult, g_mult, b_mult = kelvin_to_rgb_factors(temperature_kelvin)
+
     try:
         with open(output, "wb") as f:
             for x in range(LUT1D_SIZE):
+                unit_val = x / (LUT1D_SIZE - 1)
+                r_val = unit_val * brightness * r_mult
+                g_val = unit_val * brightness * g_mult
+                b_val = unit_val * brightness * b_mult
+
                 bs = struct.pack(
                     "<HHHH",
-                    quantize(to_unit(x)),
-                    quantize(to_unit(x)),
-                    quantize(to_unit(x)),
+                    quantize(r_val),
+                    quantize(g_val),
+                    quantize(b_val),
                     0,
                 )
                 f.write(bs)
@@ -124,9 +132,63 @@ def remove_xprop(display: str, prop_name: str):
 lut3d_path = os.path.abspath(
     os.path.join(decky.DECKY_PLUGIN_RUNTIME_DIR, "dim.lut3d")
 )
+
 lut1d_path = os.path.abspath(
     os.path.join(decky.DECKY_PLUGIN_RUNTIME_DIR, "dim.lut1d")
 )
+
+def kelvin_to_rgb_factors(kelvin: float) -> tuple[float, float, float]:
+    """
+    Convert color temperature in Kelvin to normalized RGB scaling factors.
+    Valid range: ~1000K to 15000K (clamped).
+    Returns (r, g, b) where max(r,g,b) == 1.0
+    """
+    # Clamp to reasonable range
+    k = max(1000.0, min(15000.0, float(kelvin)))
+
+    # Use algorithm from Tanner Helland (accurate approximation)
+    temp = k / 100.0
+
+    # Red
+    if temp <= 66:
+        r = 255.0
+    else:
+        r = temp - 60
+        r = 329.698727446 * (r ** -0.1332047592)
+        r = max(0, min(255, r))
+
+    # Green
+    if temp <= 66:
+        g = temp
+        g = 99.4708025861 * (g ** 0.34657359028) - 161.1195681661
+    else:
+        g = temp - 60
+        g = 288.1221695283 * (g ** -0.0755148492)
+    g = max(0, min(255, g))
+
+    # Blue
+    if temp >= 66:
+        b = 255.0
+    elif temp <= 19:
+        b = 0.0
+    else:
+        b = temp - 10
+        b = 138.5177312231 * (b ** 0.3385599327) - 305.0447927307
+        b = max(0, min(255, b))
+
+    # Convert to 0..1
+    r_norm = r / 255.0
+    g_norm = g / 255.0
+    b_norm = b / 255.0
+
+    # Normalize so that the brightest channel is 1.0 (avoid global brightening)
+    max_val = max(r_norm, g_norm, b_norm)
+    if max_val > 0:
+        r_norm /= max_val
+        g_norm /= max_val
+        b_norm /= max_val
+
+    return r_norm, g_norm, b_norm
 
 class Plugin:
     async def activate(self):
@@ -136,22 +198,19 @@ class Plugin:
         generate_lut3d(lut3d_path, 1.0)
         decky_plugin.logger.info(f"Found steam displays: {self.displays}")
 
-    async def set_brightness(self, brightness: float):
-        decky_plugin.logger.info(f"Change brightness to {brightness}")
+    async def set_brightness_and_temperature(self, brightness: float, temperature_kelvin: float = 6500.0):
+        decky_plugin.logger.info(f"Setting brightness={brightness}, temperature={temperature_kelvin}K")
 
-        generate_lut1d(lut1d_path, brightness)
+        generate_lut1d(lut1d_path, brightness, temperature_kelvin)
+        
         for display in self.displays:
             set_xprop(display, "GAMESCOPE_COMPOSITE_FORCE", "8c", 1)
             set_xprop(display, "GAMESCOPE_COLOR_3DLUT_OVERRIDE", "8u", lut3d_path)
             set_xprop(display, "GAMESCOPE_COLOR_SHAPERLUT_OVERRIDE", "8u", lut1d_path)
 
     async def set_vibrancy(self, vibrancy: float):
-        vibrancy = (vibrancy * 10 - 1) / 199
-
         decky_plugin.logger.info(f"Set raw vibrancy to: {vibrancy}")
 
-        vibrancy = max(vibrancy, 0.0)
-        vibrancy = min(vibrancy, 1.0)
         vibrancy = float_to_long(vibrancy)
 
         decky_plugin.logger.info(f"Set vibrancy to: {vibrancy}")
