@@ -1,13 +1,21 @@
 import os
+import sys
 import struct
 import subprocess
-from typing import Any, List
+from typing import Any, List, Iterable
 
 import decky
 import decky_plugin
 
 LUT1D_SIZE = 4096
 LUT3D_SIZE = 17
+
+def float_to_long(x: float) -> int:
+    return struct.unpack("!I", struct.pack("!f", x))[0]
+
+
+def long_to_float(x: int) -> float:
+    return struct.unpack("!f", struct.pack("!I", x))[0]
 
 def get_steam_displays() -> List[str]:
     displays = []
@@ -92,6 +100,7 @@ def set_xprop(display: str, prop_name: str, prop_type: str, prop_value: Any):
         str(prop_value),
     ]
     ret = subprocess.call(cmd)
+
     if ret != 0:
         decky_plugin.logger.error(f"Failed to set xprop, cmd: {cmd}, return code: {ret}")
         raise Exception("Failed to set xprop")
@@ -136,26 +145,29 @@ class Plugin:
             set_xprop(display, "GAMESCOPE_COLOR_3DLUT_OVERRIDE", "8u", lut3d_path)
             set_xprop(display, "GAMESCOPE_COLOR_SHAPERLUT_OVERRIDE", "8u", lut1d_path)
 
-    async def reset(self):
-        decky_plugin.logger.info("Resetting")
-        self.first_run = True
-        for display in self.displays:
-            remove_xprop(display, "GAMESCOPE_COMPOSITE_FORCE")
-            remove_xprop(display, "GAMESCOPE_COLOR_SHAPERLUT_OVERRIDE")
-            remove_xprop(display, "GAMESCOPE_COLOR_3DLUT_OVERRIDE")
+    async def set_vibrancy(self, vibrancy: float):
+        vibrancy = (vibrancy * 10 - 1) / 199
 
-    async def _unload(self):
-        decky_plugin.logger.info("Overlay plugin stopped")
-        if not self.first_run:
-            await self.reset()
+        decky_plugin.logger.info(f"Set raw vibrancy to: {vibrancy}")
+
+        vibrancy = max(vibrancy, 0.0)
+        vibrancy = min(vibrancy, 1.0)
+        vibrancy = float_to_long(vibrancy)
+
+        decky_plugin.logger.info(f"Set vibrancy to: {vibrancy}")
+
+        target_displays = set(self.displays)
+        target_displays.add(":1")
+        display_list = list(target_displays)
+
+        for display in display_list:
+            set_xprop(display, "GAMESCOPE_COMPOSITE_FORCE", "8c", 1)
+            set_xprop(display, "GAMESCOPE_COLOR_SDR_GAMUT_WIDENESS", "32c", str(vibrancy))
 
     async def get_hdr_status(self) -> str:
         def return_result(result):
-            decky_plugin.logger.info(f"HDR returned: {result}")
-
             return result
 
-        """Проверяет включена ли HDR"""
         if not self.displays:
             return return_result(0)
         
@@ -169,21 +181,32 @@ class Plugin:
         
         try:
             result = subprocess.run(cmd, capture_output=True, text=True)
-            decky_plugin.logger.info(f"HDR status output: {result.stdout}")
-            
+
             # Проверяй наличие свойства И его значение
             if "not found" in result.stdout:
-                decky_plugin.logger.info("HDR property not found - HDR DISABLED")
                 return return_result(0)
             
             # Если свойство есть и равно 1 - HDR включена
             is_hdr = "= 1" in result.stdout
-            decky_plugin.logger.info(f"HDR is {'ENABLED' if is_hdr else 'DISABLED'}")
+
             if is_hdr:
                 return return_result(1)
             else:
                 return return_result(0)
         except Exception as e:
-            decky_plugin.logger.error(f"Failed to get HDR status: {e}")
             return return_result(0)
+        
+    async def reset(self):
+        decky_plugin.logger.info("Resetting")
+        self.first_run = True
+        for display in self.displays:
+            remove_xprop(display, "GAMESCOPE_COMPOSITE_FORCE")
+            remove_xprop(display, "GAMESCOPE_COLOR_3DLUT_OVERRIDE")
+            remove_xprop(display, "GAMESCOPE_COLOR_SHAPERLUT_OVERRIDE")
+            remove_xprop(display, "GAMESCOPE_COLOR_SDR_GAMUT_WIDENESS")
+
+    async def _unload(self):
+        decky_plugin.logger.info("Overlay plugin stopped")
+        if not self.first_run:
+            await self.reset()
     

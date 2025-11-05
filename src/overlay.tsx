@@ -19,7 +19,7 @@
  */
 
 import { findModuleChild } from "decky-frontend-lib";
-import { VFC } from "react";
+import { VFC, useRef, useEffect, memo } from "react";
 
 enum UIComposition {
   Hidden = 0,
@@ -48,10 +48,11 @@ const useUIComposition: UseUIComposition = findModuleChild((m) => {
   }
 });
 
-const UICompositionProxy: VFC = () => {
+// КРИТИЧНО: UICompositionProxy вызывается ОДИН раз при монтировании, не пере-рендерится
+const UICompositionProxy: VFC = memo(() => {
   useUIComposition(UIComposition.Notification);
   return null;
-};
+});
 
 // Преобразует линейный процент (0–100) в перцептуально-гладкий opacity
 const getSmoothOpacity = (percent: number): number => {
@@ -59,7 +60,6 @@ const getSmoothOpacity = (percent: number): number => {
   if (percent <= 0) return 0.997;
 
   const t = (100 - percent) / 100; // 0 → 1
-  // Экспериментально подобранная степень: 2.2–3 даёт хорошую плавность
   return Math.pow(t, 0.3);
 };
 
@@ -69,25 +69,42 @@ interface OverlayProps {
 }
 
 const Overlay: VFC<OverlayProps> = ({ opacityPercent = 50, backgroundColor = 'black' }) => {
-  const smoothOpacity = getSmoothOpacity(opacityPercent);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const isFirstRender = useRef(true);
+
+  // Обновляем opacity через ref напрямую, избегая re-render
+  useEffect(() => {
+    if (overlayRef.current && !isFirstRender.current) {
+      const smoothOpacity = getSmoothOpacity(opacityPercent);
+      overlayRef.current.style.opacity = String(smoothOpacity);
+    }
+    isFirstRender.current = false;
+  }, [opacityPercent]);
+
+  // Начальная opacity
+  const initialOpacity = getSmoothOpacity(opacityPercent);
 
   return (
-    <div
-      id="brightness_bar_container"
-      style={{
-        left: 0,
-        top: 0,
-        width: "100vw",
-        height: "100vh",
-        background: backgroundColor,
-        zIndex: -1,
-        position: "fixed",
-        opacity: smoothOpacity,
-        pointerEvents: "none",
-      }}
-    >
+    <>
       <UICompositionProxy />
-    </div>
+      <div
+        ref={overlayRef}
+        id="brightness_bar_container"
+        style={{
+          left: 0,
+          top: 0,
+          width: "100vw",
+          height: "100vh",
+          background: backgroundColor,
+          zIndex: -1,
+          position: "fixed",
+          opacity: initialOpacity,
+          pointerEvents: "none",
+          transition: "opacity 0.2s ease-out",
+          willChange: "opacity",
+        }}
+      />
+    </>
   );
 };
 
