@@ -50,7 +50,11 @@ def generate_lut1d(output: str, brightness: float, temperature_kelvin: float = 6
     if not (1000 <= temperature_kelvin <= 15000):
         raise ValueError("Temperature must be between 1000K and 15000K")
 
-    r_mult, g_mult, b_mult = kelvin_to_rgb_factors(temperature_kelvin)
+    # При нейтральной температуре не применяем цветовую коррекцию
+    if temperature_kelvin == 6500.0:
+        r_mult, g_mult, b_mult = 1.0, 1.0, 1.0
+    else:
+        r_mult, g_mult, b_mult = kelvin_to_rgb_factors(temperature_kelvin)
 
     try:
         with open(output, "wb") as f:
@@ -202,7 +206,7 @@ class Plugin:
         decky_plugin.logger.info(f"Setting brightness={brightness}, temperature={temperature_kelvin}K")
 
         generate_lut1d(lut1d_path, brightness, temperature_kelvin)
-        
+
         for display in self.displays:
             set_xprop(display, "GAMESCOPE_COMPOSITE_FORCE", "8c", 1)
             set_xprop(display, "GAMESCOPE_COLOR_3DLUT_OVERRIDE", "8u", lut3d_path)

@@ -193,7 +193,7 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange, on
         <PanelSectionRow>
           <SliderField
             label="Temperature"
-            description="Low to warmer color and high for cooler."
+            description="Low to warmer color and high for cooler. 6500 — no correction."
             value={currentTargetTemperature}
             step={100}
             min={3500}
@@ -305,7 +305,7 @@ export default definePlugin((serverAPI: ServerAPI) => {
     icon: <FaEyeDropper />,
     onDismount() {
       stopHDRMonitoring();
-      updateVibrancy(10);
+      updateVibrancy(0.5);
       serverAPI.routerHook.removeGlobalComponent("BlackOverlay");
     },
   };

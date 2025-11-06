@@ -61,41 +61,54 @@ const getSmoothOpacity = (percent: number): number => {
   return Math.pow(t, 0.3);
 };
 
-function kelvinToRGB(kelvin: number): [number, number, number] {
-  const k = Math.max(1000, Math.min(15000, kelvin)) / 100;
-  let r: number, g: number, b: number;
+const NEUTRAL_TEMP = 6500;
+const BASE_TEMP_OPACITY = 0.001; // Минимальная прозрачность у нейтральной температуры
+const MAX_TEMP_OPACITY = 0.215;   // Максимальная прозрачность при сильном отклонении
 
-  if (k <= 66) {
-    r = 255;
-  } else {
-    r = k - 60;
-    r = 329.698727446 * Math.pow(r, -0.1332047592);
-    r = Math.max(0, Math.min(255, r));
+const WARM_INTENSITY_CURVE = 0.3; // Нелинейность для тёплых тонов (0.5 = корень, 1 = линейно, 2 = квадрат)
+const COOL_INTENSITY_CURVE = 0.3; // Нелинейность для холодных тонов
+
+// Простая функция: красный для тёплого, синий для холодного
+function getSimpleTemperatureColor(kelvin: number): { rgb: [number, number, number], opacity: number } {
+  if (kelvin === NEUTRAL_TEMP) {
+    return { rgb: [0, 0, 0], opacity: 0 };
   }
-
-  if (k <= 66) {
-    g = k;
-    g = 99.4708025861 * Math.pow(g, 0.34657359028) - 161.1195681661;
+  
+  const diff = kelvin - NEUTRAL_TEMP;
+  const maxDiff = 4000; // Максимальное отклонение
+  const normalizedDiff = Math.min(1, Math.abs(diff) / maxDiff);
+  
+  let intensity: number;
+  let opacity: number;
+  
+  if (kelvin < NEUTRAL_TEMP) {
+    // Тёплый = красно-оранжевый
+    intensity = Math.pow(normalizedDiff, WARM_INTENSITY_CURVE);
+    opacity = BASE_TEMP_OPACITY + (MAX_TEMP_OPACITY - BASE_TEMP_OPACITY) * intensity;
+    
+    return {
+      rgb: [
+        Math.round(255 * intensity),  // R - полный красный
+        Math.round(175 * intensity),  // G - немного зелёного для оранжевости
+        0                              // B - никакого синего
+      ],
+      opacity
+    };
   } else {
-    g = k - 60;
-    g = 288.1221695283 * Math.pow(g, -0.0755148492);
+    // Холодный = синий
+    intensity = Math.pow(normalizedDiff, COOL_INTENSITY_CURVE);
+    opacity = BASE_TEMP_OPACITY + (MAX_TEMP_OPACITY - BASE_TEMP_OPACITY) * intensity;
+    
+    return {
+      rgb: [
+        0,                              // R - никакого красного
+        Math.round(50 * intensity),     // G - чуть-чуть зелёного
+        Math.round(255 * intensity)     // B - полный синий
+      ],
+      opacity
+    };
   }
-  g = Math.max(0, Math.min(255, g));
-
-  if (k >= 66) {
-    b = 255;
-  } else if (k <= 19) {
-    b = 0;
-  } else {
-    b = k - 10;
-    b = 138.5177312231 * Math.pow(b, 0.3385599327) - 305.0447927307;
-    b = Math.max(0, Math.min(255, b));
-  }
-
-  return [Math.round(r), Math.round(g), Math.round(b)];
 }
-
-const TEMP_OPACITY = 0.20; // Базовая прозрачность температурного слоя
 
 interface OverlayProps {
   opacityPercent?: number;
@@ -119,15 +132,24 @@ const Overlay: VFC<OverlayProps> = ({
 
     // Обновляем температурный слой
     if (tempOverlayRef.current) {
-      const [r, g, b] = kelvinToRGB(temperatureKelvin);
-      tempOverlayRef.current.style.backgroundColor = `rgba(${r}, ${g}, ${b}, ${TEMP_OPACITY})`;
+      if (temperatureKelvin === NEUTRAL_TEMP) {
+        tempOverlayRef.current.style.backgroundColor = 'transparent';
+      } else {
+        const { rgb: [r, g, b], opacity } = getSimpleTemperatureColor(temperatureKelvin);
+        tempOverlayRef.current.style.backgroundColor = `rgba(${r}, ${g}, ${b}, ${opacity})`;
+      }
     }
 
     isFirstRender.current = false;
   }, [opacityPercent, temperatureKelvin]);
 
   const initialOpacity = getSmoothOpacity(opacityPercent);
-  const [r, g, b] = kelvinToRGB(temperatureKelvin);
+  
+  let initialTempBg = 'transparent';
+  if (temperatureKelvin !== NEUTRAL_TEMP) {
+    const { rgb: [r, g, b], opacity } = getSimpleTemperatureColor(temperatureKelvin);
+    initialTempBg = `rgba(${r}, ${g}, ${b}, ${opacity})`;
+  }
 
   return (
     <>
@@ -149,7 +171,7 @@ const Overlay: VFC<OverlayProps> = ({
           transition: "opacity 0.2s ease-out",
         }}
       />
-      {/* Температурный оверлей: цветной оттенок */}
+      {/* Температурный оверлей: просто полупрозрачный цвет */}
       <div
         ref={tempOverlayRef}
         id="temperature_overlay"
@@ -159,8 +181,7 @@ const Overlay: VFC<OverlayProps> = ({
           left: 0,
           width: "100vw",
           height: "100vh",
-          backgroundColor: `rgba(${r}, ${g}, ${b}, ${TEMP_OPACITY})`,
-          mixBlendMode: "color",
+          backgroundColor: initialTempBg,
           zIndex: -1,
           pointerEvents: "none",
           transition: "background-color 0.3s ease-out",
