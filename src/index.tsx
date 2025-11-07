@@ -45,6 +45,7 @@ let currentOverlayBrightnessPercent = getPwmBrightnessPercent();
 let currentTemperatureGlobal = getTemperatureValue();
 let isHDREnabledGlobal = false;
 let overlayUpdateCallback: ((percent: number, temperature: number) => void) | null = null;
+let hdrStateUpdateCallback: ((isEnabled: boolean) => void) | null = null;
 
 // КРИТИЧНО: вместо remove/add просто обновляем процент через callback
 const applyOverlayOpacity = () => {
@@ -71,6 +72,11 @@ const startHDRMonitoring = (serverAPI: ServerAPI) => {
       if (newHDRStatus !== isHDREnabledGlobal) {
         isHDREnabledGlobal = newHDRStatus;
         applyOverlayOpacity();
+        
+        // Уведомляем UI о смене состояния HDR
+        if (hdrStateUpdateCallback) {
+          hdrStateUpdateCallback(newHDRStatus);
+        }
       }
     } catch (error) {
       console.error("HDR check failed:", error);
@@ -120,6 +126,17 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange, on
   const [currentTargetTemperature, setCurrentTargetTemperature] = useState(getTemperatureValue());
   const [isHDREnabled, setIsHDREnabled] = useState(isHDREnabledGlobal);
 
+  // Подписываемся на изменения HDR состояния
+  useEffect(() => {
+    hdrStateUpdateCallback = (isEnabled: boolean) => {
+      setIsHDREnabled(isEnabled);
+    };
+
+    return () => {
+      hdrStateUpdateCallback = null;
+    };
+  }, []);
+
   const handleOverlayChange = (value: number) => {
     setSavedOverlayPercent(value);
     currentOverlayBrightnessPercent = value;
@@ -154,10 +171,6 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange, on
     }
     onTemperatureChange?.(value);
   };
-
-  useEffect(() => {
-    setIsHDREnabled(isHDREnabledGlobal);
-  }, [isHDREnabledGlobal]);
 
   return (
     <>
@@ -221,60 +234,70 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange, on
 
 // === Плагин ===
 export default definePlugin((serverAPI: ServerAPI) => {
-  let lutUpdateTimeout: NodeJS.Timeout | null = null;
-  let vibrancyUpdateTimeout: NodeJS.Timeout | null = null;
-  let temperatureUpdateTimeout: NodeJS.Timeout | null = null;
+  // === Throttled update functions ===
+  let canUpdateLut = true;
+  let canUpdateVibrancy = true;
+  let canUpdateTemperature = true;
 
   const updateLutBrightness = async (percent: number) => {
     const brightness = percent / 100;
     localStorage.setItem("pwmlessbrightness_lut", brightness.toString());
 
-    if (lutUpdateTimeout) clearTimeout(lutUpdateTimeout);
-    lutUpdateTimeout = setTimeout(async () => {
-      try {
-        await serverAPI.callPluginMethod("set_brightness_and_temperature", 
-          { 
-            brightness: brightness, 
-            temperature_kelvin: getTemperatureValue()
-          });
-      } catch (error) {
-        console.error("LUT brightness failed:", error);
+    if (!canUpdateLut) return;
+
+    canUpdateLut = false;
+    try {
+      await serverAPI.callPluginMethod("set_brightness_and_temperature", {
+        brightness,
+        temperature_kelvin: getTemperatureValue(),
+      });
+    } catch (error) {
+      console.error("LUT brightness failed:", error);
+    } finally {
+      setTimeout(() => {
+        canUpdateLut = true;
+      }, 100); // не чаще 10 раз в секунду
       }
-    }, 300);
   };
 
   const updateVibrancy = async (value: number) => {
     const vibrancy = value;
     localStorage.setItem("vibrancy_value", vibrancy.toString());
 
-    if (vibrancyUpdateTimeout) clearTimeout(vibrancyUpdateTimeout);
-    vibrancyUpdateTimeout = setTimeout(async () => {
-      try {
-        await serverAPI.callPluginMethod("set_vibrancy", { vibrancy });
-      } catch (error) {
-        console.error("Vibrancy failed:", error);
-      }
-    }, 300);
+    if (!canUpdateVibrancy) return;
+
+    canUpdateVibrancy = false;
+    try {
+      await serverAPI.callPluginMethod("set_vibrancy", { vibrancy });
+    } catch (error) {
+      console.error("Vibrancy failed:", error);
+    } finally {
+      setTimeout(() => {
+        canUpdateVibrancy = true;
+      }, 100);
+    }
   };
 
   const updateTemperature = async (value: number) => {
     const temperature = value;
-    currentTemperatureGlobal = value; 
-
+    currentTemperatureGlobal = temperature;
     localStorage.setItem("temperature_value", temperature.toString());
 
-    if (temperatureUpdateTimeout) clearTimeout(temperatureUpdateTimeout);
-    temperatureUpdateTimeout = setTimeout(async () => {
-      try {
-        await serverAPI.callPluginMethod("set_brightness_and_temperature", 
-          { 
-            brightness: getLutBrightnessValue(), 
-            temperature_kelvin: temperature 
-          });
-      } catch (error) {
-        console.error("Temperature failed:", error);
-      }
-    }, 300);
+    if (!canUpdateTemperature) return;
+
+    canUpdateTemperature = false;
+    try {
+      await serverAPI.callPluginMethod("set_brightness_and_temperature", {
+        brightness: getLutBrightnessValue(),
+        temperature_kelvin: temperature,
+      });
+    } catch (error) {
+      console.error("Temperature failed:", error);
+    } finally {
+      setTimeout(() => {
+        canUpdateTemperature = true;
+      }, 100);
+    }
   };
 
   // Активация

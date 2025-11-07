@@ -58,7 +58,7 @@ const getSmoothOpacity = (percent: number): number => {
   if (percent >= 100) return 0;
   if (percent <= 0) return 0.997;
   const t = (100 - percent) / 100;
-  return Math.pow(t, 0.3);
+  return Math.pow(t, 1.5);
 };
 
 const NEUTRAL_TEMP = 6500;
@@ -69,41 +69,47 @@ const WARM_INTENSITY_CURVE = 0.3; // Нелинейность для тёплы�
 const COOL_INTENSITY_CURVE = 0.3; // Нелинейность для холодных тонов
 
 // Простая функция: красный для тёплого, синий для холодного
-function getSimpleTemperatureColor(kelvin: number): { rgb: [number, number, number], opacity: number } {
+function getSimpleTemperatureColor(kelvin: number, brightnessPercent: number): { rgb: [number, number, number], opacity: number } {
   if (kelvin === NEUTRAL_TEMP) {
     return { rgb: [0, 0, 0], opacity: 0 };
   }
   
   const diff = kelvin - NEUTRAL_TEMP;
-  const maxDiff = 4000; // Максимальное отклонение
+  const maxDiff = 4000;
   const normalizedDiff = Math.min(1, Math.abs(diff) / maxDiff);
   
   let intensity: number;
-  let opacity: number;
+  let baseOpacity: number;
   
   if (kelvin < NEUTRAL_TEMP) {
-    // Тёплый = красно-оранжевый
+    // Тёплый
     intensity = Math.pow(normalizedDiff, WARM_INTENSITY_CURVE);
-    opacity = BASE_TEMP_OPACITY + (MAX_TEMP_OPACITY - BASE_TEMP_OPACITY) * intensity;
+    baseOpacity = BASE_TEMP_OPACITY + (MAX_TEMP_OPACITY - BASE_TEMP_OPACITY) * intensity;
+    
+    const brightnessMultiplier = brightnessPercent / 100;
+    const opacity = baseOpacity * brightnessMultiplier * intensity;
     
     return {
       rgb: [
-        Math.round(255 * intensity),  // R - полный красный
-        Math.round(175 * intensity),  // G - немного зелёного для оранжевости
-        0                              // B - никакого синего
+        Math.round(255 * intensity),
+        Math.round(175 * intensity),
+        0
       ],
       opacity
     };
   } else {
-    // Холодный = синий
+    // Холодный
     intensity = Math.pow(normalizedDiff, COOL_INTENSITY_CURVE);
-    opacity = BASE_TEMP_OPACITY + (MAX_TEMP_OPACITY - BASE_TEMP_OPACITY) * intensity;
+    baseOpacity = BASE_TEMP_OPACITY + (MAX_TEMP_OPACITY - BASE_TEMP_OPACITY) * intensity;
+    
+    const brightnessMultiplier = brightnessPercent / 100;
+    const opacity = baseOpacity * brightnessMultiplier;
     
     return {
       rgb: [
-        0,                              // R - никакого красного
-        Math.round(50 * intensity),     // G - чуть-чуть зелёного
-        Math.round(255 * intensity)     // B - полный синий
+        0,
+        Math.round(50 * intensity),
+        Math.round(255 * intensity)
       ],
       opacity
     };
@@ -135,7 +141,7 @@ const Overlay: VFC<OverlayProps> = ({
       if (temperatureKelvin === NEUTRAL_TEMP) {
         tempOverlayRef.current.style.backgroundColor = 'transparent';
       } else {
-        const { rgb: [r, g, b], opacity } = getSimpleTemperatureColor(temperatureKelvin);
+        const { rgb: [r, g, b], opacity } = getSimpleTemperatureColor(temperatureKelvin, opacityPercent);
         tempOverlayRef.current.style.backgroundColor = `rgba(${r}, ${g}, ${b}, ${opacity})`;
       }
     }
@@ -147,7 +153,7 @@ const Overlay: VFC<OverlayProps> = ({
   
   let initialTempBg = 'transparent';
   if (temperatureKelvin !== NEUTRAL_TEMP) {
-    const { rgb: [r, g, b], opacity } = getSimpleTemperatureColor(temperatureKelvin);
+    const { rgb: [r, g, b], opacity } = getSimpleTemperatureColor(temperatureKelvin, opacityPercent);
     initialTempBg = `rgba(${r}, ${g}, ${b}, ${opacity})`;
   }
 
