@@ -54,6 +54,8 @@ const UICompositionProxy: VFC = memo(() => {
   return null;
 });
 
+// Функция для вычисления кривой наложения затемнения
+// Чтобы регулировка выглядела линейной
 const getSmoothOpacity = (percent: number): number => {
   if (percent >= 100) return 0;
   if (percent <= 0) return 0.997;
@@ -68,7 +70,7 @@ const MAX_TEMP_OPACITY = 0.215;   // Максимальная прозрачно
 const WARM_INTENSITY_CURVE = 0.3; // Нелинейность для тёплых тонов (0.5 = корень, 1 = линейно, 2 = квадрат)
 const COOL_INTENSITY_CURVE = 0.3; // Нелинейность для холодных тонов
 
-// Простая функция: красный для тёплого, синий для холодного
+// Простая функция вычисления цветов и прозрачности для температурного слоя
 function getSimpleTemperatureColor(kelvin: number, brightnessPercent: number): { rgb: [number, number, number], opacity: number } {
   if (kelvin === NEUTRAL_TEMP) {
     return { rgb: [0, 0, 0], opacity: 0 };

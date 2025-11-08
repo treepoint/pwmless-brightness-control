@@ -32,99 +32,274 @@ import { useState, useEffect } from "react";
 import { FaEyeDropper } from "react-icons/fa";
 import Overlay from "./overlay";
 
-// Хелперы
-const getOpacityValue = () => parseFloat(localStorage.getItem("pwmlessbrightness") ?? "0.5");
-const getLutBrightnessValue = () => parseFloat(localStorage.getItem("pwmlessbrightness_lut") ?? "1.0");
-const getLutBrightnessPercent = () => getLutBrightnessValue() * 100;
-const getPwmBrightnessPercent = () => 100 - getOpacityValue() * 100;
-const getVibrancyValue = () => parseFloat(localStorage.getItem("vibrancy_value") ?? "0.5");
-const getTemperatureValue = () => parseFloat(localStorage.getItem("temperature_value") ?? "9500");
+// ============================================================================
+// КОНСТАНТЫ И КЛЮЧИ ЛОКАЛЬНОГО ХРАНИЛИЩА
+// ============================================================================
 
-// Глобальное состояние (доступно вне React)
-let currentOverlayBrightnessPercent = getPwmBrightnessPercent();
-let currentTemperatureGlobal = getTemperatureValue();
-let isHDREnabledGlobal = false;
+const STORAGE_KEYS = {
+  OVERLAY_OPACITY: "pwmlessbrightness",      // Прозрачность оверлея (0-1)
+  LUT_BRIGHTNESS: "pwmlessbrightness_lut",   // Яркость через LUT (0-1)
+  VIBRANCY: "vibrancy_value",                // Насыщенность цветов (0-1)
+  TEMPERATURE: "temperature_value",          // Цветовая температура (Kelvin)
+};
+
+const DEFAULT_VALUES = {
+  OVERLAY_OPACITY: 0.5,    // 50% затемнения по умолчанию
+  LUT_BRIGHTNESS: 1.0,     // 100% яркости по умолчанию
+  VIBRANCY: 0.5,           // Нейтральная насыщенность
+  TEMPERATURE: 9500,       // Холодная температура по умолчанию
+};
+
+const THROTTLE_MS = 100; // Минимальный интервал между обновлениями (10 раз/сек)
+const HDR_CHECK_INTERVAL_MS = 250; // Проверка HDR каждые 250мс
+
+// ============================================================================
+// УТИЛИТЫ ДЛЯ РАБОТЫ С LOCALSTORAGE
+// ============================================================================
+
+/**
+ * Получает значение прозрачности оверлея из localStorage
+ * @returns число от 0 до 1, где 0 = полностью прозрачный, 1 = полностью чёрный
+ */
+const getOverlayOpacity = (): number => {
+  return parseFloat(localStorage.getItem(STORAGE_KEYS.OVERLAY_OPACITY) ?? String(DEFAULT_VALUES.OVERLAY_OPACITY));
+};
+
+/**
+ * Получает яркость LUT из localStorage
+ * @returns число от 0 до 1, где 1 = полная яркость
+ */
+const getLutBrightness = (): number => {
+  return parseFloat(localStorage.getItem(STORAGE_KEYS.LUT_BRIGHTNESS) ?? String(DEFAULT_VALUES.LUT_BRIGHTNESS));
+};
+
+/**
+ * Конвертирует яркость LUT в проценты для UI
+ * @returns число от 0 до 100
+ */
+const getLutBrightnessPercent = (): number => {
+  return getLutBrightness() * 100;
+};
+
+/**
+ * Конвертирует прозрачность оверлея в проценты яркости для UI
+ * Инвертирует значение: высокая прозрачность = низкая яркость
+ * @returns число от 0 до 100
+ */
+const getOverlayBrightnessPercent = (): number => {
+  return 100 - getOverlayOpacity() * 100;
+};
+
+/**
+ * Получает насыщенность цветов из localStorage
+ * @returns число от 0 до 1
+ */
+const getVibrancy = (): number => {
+  return parseFloat(localStorage.getItem(STORAGE_KEYS.VIBRANCY) ?? String(DEFAULT_VALUES.VIBRANCY));
+};
+
+/**
+ * Получает цветовую температуру из localStorage
+ * @returns температура в Кельвинах
+ */
+const getTemperature = (): number => {
+  return parseFloat(localStorage.getItem(STORAGE_KEYS.TEMPERATURE) ?? String(DEFAULT_VALUES.TEMPERATURE));
+};
+
+// ============================================================================
+// ГЛОБАЛЬНОЕ СОСТОЯНИЕ
+// ============================================================================
+// Это состояние живёт вне React-компонентов и доступно всегда,
+// даже когда UI закрыт. Это критично для фоновой работы HDR мониторинга.
+
+/**
+ * Текущее значение яркости оверлея (в процентах)
+ * Синхронизируется с localStorage при изменениях
+ */
+let globalOverlayBrightnessPercent = getOverlayBrightnessPercent();
+
+/**
+ * Текущая цветовая температура
+ * Используется для применения коррекции цвета
+ */
+let globalTemperature = getTemperature();
+
+/**
+ * Флаг состояния HDR
+ * true = HDR включён, оверлей должен работать
+ * false = SDR режим, оверлей скрыт (100% прозрачность)
+ */
+let isHDRActive = false;
+
+/**
+ * Callback для обновления React-компонента оверлея
+ * Позволяет изменять прозрачность и температуру без пересоздания компонента
+ */
 let overlayUpdateCallback: ((percent: number, temperature: number) => void) | null = null;
+
+/**
+ * Callback для уведомления UI о смене HDR состояния
+ * Обновляет метку "(Enabled/Disabled)" в интерфейсе
+ */
 let hdrStateUpdateCallback: ((isEnabled: boolean) => void) | null = null;
 
-// КРИТИЧНО: вместо remove/add просто обновляем процент через callback
-const applyOverlayOpacity = () => {
-  const percent = isHDREnabledGlobal ? currentOverlayBrightnessPercent : 100;
-  const percent_compensate = percent - getOpacityValue()
+// ============================================================================
+// УПРАВЛЕНИЕ ОВЕРЛЕЕМ
+// ============================================================================
 
+/**
+ * Применяет текущие настройки яркости к оверлею
+ * 
+ * Логика работы:
+ * - Если HDR выключен: оверлей полностью прозрачен (100%)
+ * - Если HDR включён: применяется сохранённая яркость минус компенсация прозрачности
+ * 
+ * Компенсация нужна, чтобы оверлей работал корректно с учётом его базовой прозрачности
+ */
+const applyOverlaySettings = () => {
+  // Если HDR выключен, оверлей должен быть невидимым
+  const targetPercent = isHDRActive ? globalOverlayBrightnessPercent : 100;
+  
+  // Компенсируем базовую прозрачность оверлея
+  const compensatedPercent = targetPercent - getOverlayOpacity();
+
+  // Если есть активный callback, обновляем оверлей
   if (overlayUpdateCallback) {
-    overlayUpdateCallback(percent_compensate, currentTemperatureGlobal);
+    overlayUpdateCallback(compensatedPercent, globalTemperature);
   }
 };
 
-// Фоновая проверка HDR (работает всегда, даже без открытого UI)
+// ============================================================================
+// ФОНОВЫЙ МОНИТОРИНГ HDR
+// ============================================================================
+// HDR мониторинг работает постоянно в фоне, проверяя каждые 250мс,
+// включён ли HDR режим. Это нужно, потому что Steam Deck может переключаться
+// между SDR и HDR автоматически при запуске игр.
+
 let hdrCheckInterval: NodeJS.Timeout | null = null;
-let serverAPIRef: ServerAPI | null = null;
+let serverAPIReference: ServerAPI | null = null;
 
+/**
+ * Запускает фоновую проверку состояния HDR
+ * Проверяет каждые 250мс через вызов серверного метода
+ * 
+ * @param serverAPI - API для связи с бэкенд-частью плагина
+ */
 const startHDRMonitoring = (serverAPI: ServerAPI) => {
-  serverAPIRef = serverAPI;
+  serverAPIReference = serverAPI;
 
-  const checkHDR = async () => {
+  /**
+   * Функция проверки HDR, вызывается периодически
+   */
+  const checkHDRStatus = async () => {
     try {
-      const hdrStatus = await serverAPI.callPluginMethod("get_hdr_status", {});
-      const newHDRStatus = hdrStatus.result;
+      // Вызываем метод бэкенда для проверки HDR
+      const response = await serverAPI.callPluginMethod("get_hdr_status", {});
+      const newHDRStatus = response.result as boolean;
 
-      if (newHDRStatus !== isHDREnabledGlobal) {
-        isHDREnabledGlobal = newHDRStatus;
-        applyOverlayOpacity();
+      // Если состояние HDR изменилось
+      if (newHDRStatus !== isHDRActive) {
+        isHDRActive = newHDRStatus;
         
-        // Уведомляем UI о смене состояния HDR
+        // Применяем новые настройки оверлея
+        applyOverlaySettings();
+        
+        // Уведомляем UI об изменении (обновляет метку Enabled/Disabled)
         if (hdrStateUpdateCallback) {
           hdrStateUpdateCallback(newHDRStatus);
         }
       }
     } catch (error) {
-      console.error("HDR check failed:", error);
+      console.error("HDR status check failed:", error);
     }
   };
 
-  checkHDR(); // сразу проверить
-  hdrCheckInterval = setInterval(checkHDR, 250);
+  // Проверяем сразу при старте
+  checkHDRStatus();
+  
+  // Запускаем периодическую проверку
+  hdrCheckInterval = setInterval(checkHDRStatus, HDR_CHECK_INTERVAL_MS);
 };
 
+/**
+ * Останавливает фоновый мониторинг HDR
+ * Вызывается при выгрузке плагина
+ */
 const stopHDRMonitoring = () => {
   if (hdrCheckInterval) {
     clearInterval(hdrCheckInterval);
     hdrCheckInterval = null;
   }
-  serverAPIRef = null;
+  serverAPIReference = null;
 };
 
-// Враппер который живёт постоянно и обновляется через состояние
+// ============================================================================
+// REACT КОМПОНЕНТЫ
+// ============================================================================
+
+/**
+ * Обёртка для компонента Overlay
+ * 
+ * Этот компонент живёт постоянно (добавлен как GlobalComponent) и никогда
+ * не удаляется из DOM. Вместо удаления/добавления он обновляется через
+ * React state, что предотвращает мерцание и проблемы с производительностью.
+ */
 const OverlayWrapper = () => {
+  // Состояние прозрачности оверлея (в процентах)
   const [opacityPercent, setOpacityPercent] = useState(
-    isHDREnabledGlobal ? currentOverlayBrightnessPercent : 100
+    isHDRActive ? globalOverlayBrightnessPercent : 100
   );
 
-  const [temperature, setTemperature] = useState(currentTemperatureGlobal);
+  // Состояние цветовой температуры
+  const [temperature, setTemperature] = useState(globalTemperature);
 
   useEffect(() => {
-    // Регистрируем callback для обновления
-    overlayUpdateCallback = (percent: number, temperature: number) => {
+    // Регистрируем callback для внешнего обновления состояния
+    // Это позволяет изменять оверлей из любого места кода
+    overlayUpdateCallback = (percent: number, temp: number) => {
       setOpacityPercent(percent);
-      setTemperature(temperature);
+      setTemperature(temp);
     };
 
+    // Очищаем callback при размонтировании
     return () => {
       overlayUpdateCallback = null;
     };
   }, []);
 
-  return <Overlay opacityPercent={opacityPercent} temperatureKelvin={temperature}/>;
+  return <Overlay opacityPercent={opacityPercent} temperatureKelvin={temperature} />;
 };
 
-// === Компонент настроек (только для UI) ===
-const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange, onTemperatureChange }) => {
-  const [savedOverlayPercent, setSavedOverlayPercent] = useState(currentOverlayBrightnessPercent);
-  const [lutValue, setLutValue] = useState(getLutBrightnessPercent());
-  const [currentTargetVibrancy, setCurrentTargetVibrancy] = useState(getVibrancyValue());
-  const [currentTargetTemperature, setCurrentTargetTemperature] = useState(getTemperatureValue());
-  const [isHDREnabled, setIsHDREnabled] = useState(isHDREnabledGlobal);
+// ============================================================================
+// ИНТЕРФЕЙС НАСТРОЕК
+// ============================================================================
+
+interface BrightnessSettingsProps {
+  onOverlayChange: (percent: number) => void;
+  onLutChange: (percent: number) => void;
+  onVibrancyChange: (value: number) => void;
+  onTemperatureChange: (kelvin: number) => void;
+}
+
+/**
+ * Компонент панели настроек яркости и цвета
+ * 
+ * Содержит два раздела:
+ * 1. Brightness - управление яркостью через LUT и оверлей
+ * 2. Color correction - управление температурой и насыщенностью
+ */
+const BrightnessSettings = ({
+  onOverlayChange,
+  onLutChange,
+  onVibrancyChange,
+  onTemperatureChange,
+}: BrightnessSettingsProps) => {
+  // Локальное состояние для UI слайдеров
+  const [overlayPercent, setOverlayPercent] = useState(globalOverlayBrightnessPercent);
+  const [lutPercent, setLutPercent] = useState(getLutBrightnessPercent());
+  const [vibrancy, setVibrancy] = useState(getVibrancy());
+  const [temperature, setTemperature] = useState(getTemperature());
+  const [isHDREnabled, setIsHDREnabled] = useState(isHDRActive);
 
   // Подписываемся на изменения HDR состояния
   useEffect(() => {
@@ -137,39 +312,57 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange, on
     };
   }, []);
 
+  /**
+   * Обработчик изменения яркости оверлея
+   * Сохраняет в localStorage и применяет, если HDR активен
+   */
   const handleOverlayChange = (value: number) => {
-    setSavedOverlayPercent(value);
-    currentOverlayBrightnessPercent = value;
-    localStorage.setItem("pwmlessbrightness", ((100 - value) / 100).toString());
+    setOverlayPercent(value);
+    globalOverlayBrightnessPercent = value;
+    
+    // Конвертируем проценты яркости в прозрачность (инвертируем)
+    const opacity = (100 - value) / 100;
+    localStorage.setItem(STORAGE_KEYS.OVERLAY_OPACITY, opacity.toString());
 
-    // Если сейчас HDR включён — сразу применить
-    if (isHDREnabledGlobal) {
-      applyOverlayOpacity();
+    // Применяем только если HDR включён
+    if (isHDRActive) {
+      applyOverlaySettings();
     }
-    onOverlayChange?.(value);
+    
+    onOverlayChange(value);
   };
 
+  /**
+   * Обработчик изменения яркости LUT
+   */
   const handleLutChange = (value: number) => {
-    setLutValue(value);
+    setLutPercent(value);
     onLutChange(value);
   };
 
+  /**
+   * Обработчик изменения насыщенности
+   */
   const handleVibrancyChange = (value: number) => {
-    setCurrentTargetVibrancy(value);
+    setVibrancy(value);
     onVibrancyChange(value);
   };
 
+  /**
+   * Обработчик изменения цветовой температуры
+   * Сохраняет в localStorage и глобальное состояние, применяет если HDR активен
+   */
   const handleTemperatureChange = (value: number) => {
-    setCurrentTargetTemperature(value);
-    onTemperatureChange(value);
-    localStorage.setItem("temperature_value", value.toString());
+    setTemperature(value);
+    localStorage.setItem(STORAGE_KEYS.TEMPERATURE, value.toString());
+    globalTemperature = value;
 
-    currentTemperatureGlobal = value;
-
-    if (isHDREnabledGlobal) {
-      applyOverlayOpacity();
+    // Применяем только если HDR включён
+    if (isHDRActive) {
+      applyOverlaySettings();
     }
-    onTemperatureChange?.(value);
+    
+    onTemperatureChange(value);
   };
 
   return (
@@ -177,9 +370,9 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange, on
       <PanelSection title="Brightness">
         <PanelSectionRow>
           <SliderField
-            label="General brightness (LUT)"
-            description="Works for SDR content and UI"
-            value={lutValue}
+            label="General brightness"
+            description="Works for SDR content and UI."
+            value={lutPercent}
             step={1}
             min={10}
             max={100}
@@ -189,25 +382,23 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange, on
         </PanelSectionRow>
         <PanelSectionRow>
           <SliderField
-            label="HDR Brightness (Overlay)"
-            description="Works only for HDR content"
-            value={savedOverlayPercent}
+            label={`HDR Brightness (${isHDREnabled ? 'Enabled' : 'Disabled'})`}
+            description="Works only for HDR content."
+            value={overlayPercent}
             min={5}
             max={100}
             step={1}
             showValue
             onChange={handleOverlayChange}
-            disabled={!isHDREnabled}
           />
         </PanelSectionRow>
       </PanelSection>
-
       <PanelSection title="Color correction">
         <PanelSectionRow>
           <SliderField
             label="Temperature"
             description="Low to warmer color and high for cooler. 6500 — no correction."
-            value={currentTargetTemperature}
+            value={temperature}
             step={100}
             min={3500}
             max={9000}
@@ -218,8 +409,8 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange, on
         <PanelSectionRow>
           <SliderField
             label="Vibrancy"
-            description="Control the vibrancy. Works for some games."
-            value={currentTargetVibrancy}
+            description="Control the vibrancy. Works for some games. 0.5 - no correction."
+            value={vibrancy}
             step={0.1}
             min={0}
             max={1}
@@ -232,16 +423,30 @@ const BrightnessSettings = ({ onOverlayChange, onLutChange, onVibrancyChange, on
   );
 };
 
-// === Плагин ===
+// ============================================================================
+// ОПРЕДЕЛЕНИЕ ПЛАГИНА
+// ============================================================================
+
 export default definePlugin((serverAPI: ServerAPI) => {
-  // === Throttled update functions ===
+  // ========================================================================
+  // THROTTLED ФУНКЦИИ ДЛЯ ОБНОВЛЕНИЯ НАСТРОЕК
+  // ========================================================================
+  // Эти функции ограничивают частоту вызовов API (не чаще 10 раз/сек),
+  // чтобы не перегружать бэкенд при быстром движении слайдеров.
+
   let canUpdateLut = true;
   let canUpdateVibrancy = true;
   let canUpdateTemperature = true;
 
+  /**
+   * Обновляет яркость LUT на сервере
+   * Throttled: не чаще 10 раз в секунду
+   * 
+   * @param percent - яркость в процентах (0-100)
+   */
   const updateLutBrightness = async (percent: number) => {
     const brightness = percent / 100;
-    localStorage.setItem("pwmlessbrightness_lut", brightness.toString());
+    localStorage.setItem(STORAGE_KEYS.LUT_BRIGHTNESS, brightness.toString());
 
     if (!canUpdateLut) return;
 
@@ -249,86 +454,128 @@ export default definePlugin((serverAPI: ServerAPI) => {
     try {
       await serverAPI.callPluginMethod("set_brightness_and_temperature", {
         brightness,
-        temperature_kelvin: getTemperatureValue(),
+        temperature_kelvin: getTemperature(),
       });
     } catch (error) {
-      console.error("LUT brightness failed:", error);
+      console.error("LUT brightness update failed:", error);
     } finally {
       setTimeout(() => {
         canUpdateLut = true;
-      }, 100); // не чаще 10 раз в секунду
-      }
+      }, THROTTLE_MS);
+    }
   };
 
+  /**
+   * Обновляет насыщенность на сервере
+   * Throttled: не чаще 10 раз в секунду
+   * 
+   * @param value - насыщенность (0-1)
+   */
   const updateVibrancy = async (value: number) => {
-    const vibrancy = value;
-    localStorage.setItem("vibrancy_value", vibrancy.toString());
+    localStorage.setItem(STORAGE_KEYS.VIBRANCY, value.toString());
 
     if (!canUpdateVibrancy) return;
 
     canUpdateVibrancy = false;
     try {
-      await serverAPI.callPluginMethod("set_vibrancy", { vibrancy });
+      await serverAPI.callPluginMethod("set_vibrancy", { vibrancy: value });
     } catch (error) {
-      console.error("Vibrancy failed:", error);
+      console.error("Vibrancy update failed:", error);
     } finally {
       setTimeout(() => {
         canUpdateVibrancy = true;
-      }, 100);
+      }, THROTTLE_MS);
     }
   };
 
+  /**
+   * Обновляет цветовую температуру на сервере
+   * Throttled: не чаще 10 раз в секунду
+   * 
+   * @param value - температура в Кельвинах
+   */
   const updateTemperature = async (value: number) => {
-    const temperature = value;
-    currentTemperatureGlobal = temperature;
-    localStorage.setItem("temperature_value", temperature.toString());
+    globalTemperature = value;
+    localStorage.setItem(STORAGE_KEYS.TEMPERATURE, value.toString());
 
     if (!canUpdateTemperature) return;
 
     canUpdateTemperature = false;
     try {
       await serverAPI.callPluginMethod("set_brightness_and_temperature", {
-        brightness: getLutBrightnessValue(),
-        temperature_kelvin: temperature,
+        brightness: getLutBrightness(),
+        temperature_kelvin: value,
       });
     } catch (error) {
-      console.error("Temperature failed:", error);
+      console.error("Temperature update failed:", error);
     } finally {
       setTimeout(() => {
         canUpdateTemperature = true;
-      }, 100);
+      }, THROTTLE_MS);
     }
   };
 
-  // Активация
+  // ========================================================================
+  // ИНИЦИАЛИЗАЦИЯ ПЛАГИНА
+  // ========================================================================
+
+  /**
+   * Активируем плагин на бэкенде
+   * Выполняется асинхронно при загрузке
+   */
   (async () => {
     try {
       await serverAPI.callPluginMethod("activate", {});
     } catch (error) {
-      console.error("Plugin activate failed:", error);
+      console.error("Plugin activation failed:", error);
     }
   })();
 
-  // Запуск HDR мониторинга — работает всегда!
+  /**
+   * Запускаем фоновый мониторинг HDR
+   * Работает постоянно, даже когда UI закрыт
+   */
   startHDRMonitoring(serverAPI);
 
-  // КРИТИЧНО: добавляем overlay ОДИН РАЗ через wrapper
+  /**
+   * КРИТИЧНО: Добавляем оверлей как глобальный компонент ОДИН РАЗ
+   * Он будет жить постоянно и обновляться через React state,
+   * а не через удаление/добавление в DOM
+   */
   serverAPI.routerHook.addGlobalComponent("BlackOverlay", OverlayWrapper);
 
+  // ========================================================================
+  // ВОЗВРАЩАЕМЫЙ ОБЪЕКТ ПЛАГИНА
+  // ========================================================================
+  
   return {
+    // Заголовок плагина в меню
     title: <div className={staticClasses.Title}>Dark Sight</div>,
+    
+    // Содержимое панели настроек
     content: (
       <BrightnessSettings
-        onOverlayChange={() => {}}
+        onOverlayChange={() => {}} // Обработка уже внутри компонента
         onLutChange={updateLutBrightness}
         onVibrancyChange={updateVibrancy}
         onTemperatureChange={updateTemperature}
       />
     ),
+    
+    // Иконка плагина
     icon: <FaEyeDropper />,
+    
+    /**
+     * Вызывается при выгрузке плагина
+     * Останавливает мониторинг, сбрасывает насыщенность, удаляет оверлей
+     */
     onDismount() {
       stopHDRMonitoring();
-      updateVibrancy(0.5);
+      
+      // Сбрасываем насыщенность в нейтральное значение
+      updateVibrancy(DEFAULT_VALUES.VIBRANCY);
+      
+      // Удаляем глобальный компонент оверлея
       serverAPI.routerHook.removeGlobalComponent("BlackOverlay");
     },
   };
